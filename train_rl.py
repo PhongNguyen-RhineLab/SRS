@@ -1,0 +1,233 @@
+"""
+Joint training loop for the RL policy + diversity module (Section 4.3).
+
+Two independent optimizers update at each step:
+  1. RL optimizer   minimizes L_RL = L_critic + L_actor      (Eq. 12)
+  2. Sub optimizer  minimizes L_sub = L_hit + lambda_rank * L_div_rank
+
+L_actor = -sg[Abar_t] * log pi(a_tilde_t|s_t)
+          + beta_bc * (eta_cur_t - sg[eta_beh_t])^2      (BC term, eta only)
+          - beta_ent * H[pi(.|s_t)]                       (entropy bonus)
+
+Example:
+    python train_rl.py
+"""
+
+import os
+import csv
+import numpy as np
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
+
+from config import Config
+from data import load_and_preprocess, split_data
+from retriever import SASRec, FAISSIndex
+from diversity import DiversityModule
+from rl_policy import StateEncoder, Actor, Critic
+from buffer import ReplayBuffer
+from env import SlateEnv
+from evaluate import evaluate_srs, evaluate_icsrec_greedy, get_item_embeddings_for_ild
+
+
+def compute_normalized_advantage(deltas: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """A_bar_t = (delta_t - mu_delta) / (sigma_delta + eps), Eq. (11)."""
+    mu = deltas.mean()
+    sigma = deltas.std(unbiased=False)
+    return (deltas - mu) / (sigma + eps)
+
+
+def train_one_epoch(cfg, env: SlateEnv, actor: Actor, critic: Critic,
+                    diversity_module: DiversityModule,
+                    rl_optimizer, sub_optimizer, buffer: ReplayBuffer):
+    device = cfg.device
+    actor.train()
+    critic.train()
+    diversity_module.train()
+
+    epoch_logs = {"critic_loss": [], "actor_loss": [], "sub_loss": [],
+                 "reward": [], "alpha": []}
+
+    for step in range(cfg.steps_per_epoch):
+        # ---- collect one transition (single-environment rollout) ----
+        steps_batch = env.sample_batch_steps(1)
+        user, t = steps_batch[0]
+
+        transition = env.step(user, t, actor, training=True)
+        if transition is None:
+            continue
+
+        buffer.push(
+            transition["state"], transition["next_state"], transition["a_tilde"],
+            transition["reward"], transition["slate"], transition["slate_rel"],
+            transition["candidates"], transition["done"],
+        )
+        epoch_logs["reward"].append(transition["reward"])
+        epoch_logs["alpha"].append(transition["alpha"])
+
+        if len(buffer) < cfg.batch_size:
+            continue
+
+        # ---- sample a mini-batch and update ----
+        batch = buffer.sample(cfg.batch_size)
+
+        states      = torch.stack([b.state for b in batch]).to(device)
+        next_states = torch.stack([b.next_state for b in batch]).to(device)
+        a_tilde_beh = torch.stack([b.a_tilde for b in batch]).to(device)
+        rewards     = torch.FloatTensor([b.reward for b in batch]).to(device)
+
+        # ---------------- critic loss (Eq. 10) ----------------
+        with torch.no_grad():
+            v_next = critic(next_states)
+            td_target = rewards + cfg.gamma * v_next
+
+        v_curr = critic(states)
+        critic_loss = F.mse_loss(v_curr, td_target.detach())
+
+        with torch.no_grad():
+            delta = rewards + cfg.gamma * v_next - v_curr
+            advantage = compute_normalized_advantage(delta)
+
+        # ---------------- actor loss (Eq. 13) ----------------
+        logp_cur = actor.log_prob_of(states, a_tilde_beh)
+
+        action_cur, _, _ = actor.sample(states, deterministic=False)
+        eta_cur = action_cur[:, 1]
+        eta_beh = torch.sigmoid(a_tilde_beh[:, 1]).detach()
+
+        bc_term = cfg.beta_bc * ((eta_cur - eta_beh) ** 2).mean()
+        entropy_term = cfg.beta_ent * actor.entropy(states).mean()
+
+        actor_loss = (-(advantage.detach() * logp_cur).mean()
+                     + bc_term - entropy_term)
+
+        rl_loss = critic_loss + actor_loss
+
+        rl_optimizer.zero_grad()
+        rl_loss.backward()
+        torch.nn.utils.clip_grad_norm_(
+            list(actor.parameters()) + list(critic.parameters()), max_norm=5.0)
+        rl_optimizer.step()
+
+        # ---------------- diversity-module loss ----------------
+        sub_losses = []
+        for b in batch:
+            alpha_b = float(torch.sigmoid(b.a_tilde[0]).item())
+            score = diversity_module.compute_slate_score(
+                b.slate_items, b.rel_scores, alpha_b)
+            hit_l = diversity_module.hit_loss(score, b.reward, clamp=cfg.div_clamp)
+            rank_l = diversity_module.diversity_rank_loss(
+                b.slate_items, b.candidate_items, margin=cfg.div_margin)
+            sub_losses.append(hit_l + cfg.lambda_rank * rank_l)
+
+        sub_loss = torch.stack(sub_losses).mean()
+
+        sub_optimizer.zero_grad()
+        sub_loss.backward()
+        torch.nn.utils.clip_grad_norm_(diversity_module.parameters(), max_norm=5.0)
+        sub_optimizer.step()
+
+        epoch_logs["critic_loss"].append(critic_loss.item())
+        epoch_logs["actor_loss"].append(actor_loss.item())
+        epoch_logs["sub_loss"].append(sub_loss.item())
+
+    return {k: float(np.mean(v)) if v else 0.0 for k, v in epoch_logs.items()}
+
+
+def main():
+    cfg = Config()
+    torch.manual_seed(cfg.seed)
+    np.random.seed(cfg.seed)
+
+    print("Loading preprocessed data...")
+    data = load_and_preprocess(cfg.data_dir)
+    cfg.num_items = data["num_items"]
+    cfg.num_users = data["num_users"]
+    train_seqs, val_seqs, test_seqs = split_data(data["sequences"])
+
+    device = cfg.device
+    print(f"Using device: {device}")
+
+    # ---------------- load frozen retriever + FAISS index ----------------
+    retriever = SASRec(
+        num_items=cfg.num_items, emb_dim=cfg.ret_emb_dim,
+        max_seq_len=cfg.max_seq_len, num_heads=cfg.ret_num_heads,
+        num_layers=cfg.ret_num_layers, dropout=cfg.ret_dropout,
+    ).to(device)
+
+    ckpt_path = os.path.join(cfg.checkpoint_dir, "sasrec_retriever.pt")
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(
+            f"{ckpt_path} not found. Run train_retriever.py first."
+        )
+    retriever.load_state_dict(torch.load(ckpt_path, map_location=device))
+    retriever.eval()
+    for p in retriever.parameters():
+        p.requires_grad_(False)
+
+    faiss_index = FAISSIndex.load(
+        os.path.join(cfg.checkpoint_dir, "faiss_index.npy"), cfg.ret_emb_dim)
+
+    # ---------------- build trainable modules ----------------
+    diversity_module = DiversityModule(cfg.num_items, cfg.div_emb_dim).to(device)
+    state_encoder = StateEncoder(
+        cfg.num_items, item_emb_dim=cfg.ret_emb_dim,
+        state_dim=cfg.state_dim, h=cfg.h,
+    ).to(device)
+    actor = Actor(cfg.state_dim, cfg.hidden_dim, cfg.alpha_init_bias).to(device)
+    critic = Critic(cfg.state_dim, cfg.hidden_dim).to(device)
+
+    rl_optimizer = torch.optim.Adam(
+        list(actor.parameters()) + list(critic.parameters()), lr=cfg.lr_rl)
+    sub_optimizer = torch.optim.Adam(diversity_module.parameters(), lr=cfg.lr_sub)
+
+    buffer = ReplayBuffer(cfg.buffer_size)
+    env = SlateEnv(cfg, train_seqs, retriever, faiss_index, diversity_module, state_encoder)
+
+    os.makedirs(cfg.checkpoint_dir, exist_ok=True)
+    log_path = os.path.join(cfg.checkpoint_dir, "training_log.csv")
+    with open(log_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["epoch", "critic_loss", "actor_loss", "sub_loss",
+                         "mean_reward", "mean_alpha", "val_HR@10", "val_NDCG@10"])
+
+    print(f"Starting joint RL training for {cfg.num_epochs} epochs, "
+          f"{cfg.steps_per_epoch} steps/epoch...")
+
+    for epoch in range(1, cfg.num_epochs + 1):
+        logs = train_one_epoch(cfg, env, actor, critic, diversity_module,
+                              rl_optimizer, sub_optimizer, buffer)
+
+        print(f"Epoch {epoch}: critic_loss={logs['critic_loss']:.4f} "
+              f"actor_loss={logs['actor_loss']:.4f} sub_loss={logs['sub_loss']:.4f} "
+              f"mean_reward={logs['reward']:.4f} mean_alpha={logs['alpha']:.3f}")
+
+        val_hr, val_ndcg = 0.0, 0.0
+        if epoch % cfg.eval_every == 0 or epoch == 1 or epoch == cfg.num_epochs:
+            item_embs = get_item_embeddings_for_ild(diversity_module, cfg.num_items)
+            val_metrics = evaluate_srs(
+                cfg, val_seqs, retriever, faiss_index, diversity_module,
+                state_encoder, actor, item_embs,
+            )
+            val_hr, val_ndcg = val_metrics["HR@k"], val_metrics["NDCG@k"]
+            print(f"  Val HR@{cfg.k}={val_hr:.4f} NDCG@{cfg.k}={val_ndcg:.4f} "
+                  f"ILD={val_metrics['ILD']:.4f}")
+
+        with open(log_path, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch, logs["critic_loss"], logs["actor_loss"],
+                            logs["sub_loss"], logs["reward"], logs["alpha"],
+                            val_hr, val_ndcg])
+
+    # ---------------- save checkpoints ----------------
+    torch.save(diversity_module.state_dict(),
+               os.path.join(cfg.checkpoint_dir, "diversity_module.pt"))
+    torch.save(state_encoder.state_dict(),
+               os.path.join(cfg.checkpoint_dir, "state_encoder.pt"))
+    torch.save(actor.state_dict(), os.path.join(cfg.checkpoint_dir, "actor.pt"))
+    torch.save(critic.state_dict(), os.path.join(cfg.checkpoint_dir, "critic.pt"))
+    print("All Stage-3 checkpoints saved.")
+
+
+if __name__ == "__main__":
+    main()
