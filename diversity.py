@@ -130,6 +130,69 @@ class DiversityModule(nn.Module):
 
         return slate
 
+    # --------------------------------------------------- average deficit (Def. 4)
+
+    def estimate_average_deficit(
+        self,
+        candidate_items: list,
+        relevance_scores: list,
+        alpha: float,
+        k: int,
+        num_x_samples: int = 5,
+    ) -> list:
+        """
+        Definition 4: average deficit along a greedy rollout.
+
+            delta_bar(alpha) = E_{S~greedy path, x~Unif(V\\S)}[max(0, -Delta(x|S))]
+
+        Unlike theory.worst_case_deficit (the pessimistic closed-form bound
+        from Eq. 6), this walks the actual deterministic greedy path for
+        this candidate pool and alpha, and at each intermediate state S_t
+        (|S_t| = 0, 1, ..., k-1) samples a few random items x from the
+        remaining pool, returning every max(0, -Delta(x|S_t)) sample
+        encountered. Average these (across many users) to get delta_bar(alpha).
+
+        Returns: list of float deficit samples (not yet averaged), so the
+        caller can pool samples across many users before taking the mean.
+
+        Example:
+            samples = div.estimate_average_deficit(cand_ids, scores, alpha=0.617, k=10)
+            # pool `samples` across all test users, then np.mean(all_samples)
+        """
+        N = len(candidate_items)
+        device = self.item_emb.weight.device
+
+        items_t = torch.LongTensor(candidate_items).to(device)
+        rel_t = torch.FloatTensor(relevance_scores).to(device)
+
+        with torch.no_grad():
+            embs = self.get_embeddings(items_t)
+            sigma = self._sigma().detach()
+            cos_sim = embs @ embs.T
+            K = torch.exp(-(1.0 - cos_sim) / sigma)
+
+        selected = torch.zeros(N, dtype=torch.bool, device=device)
+        pen_accum = torch.zeros(N, device=device)
+        deficit_samples = []
+
+        for _ in range(k):
+            gains = alpha * rel_t - (1.0 - alpha) * pen_accum  # Delta(x|S_t) for all x
+
+            avail_idx = (~selected).nonzero(as_tuple=True)[0]
+            if len(avail_idx) > 0:
+                n_samp = min(num_x_samples, len(avail_idx))
+                perm = avail_idx[torch.randperm(len(avail_idx), device=device)[:n_samp]]
+                for idx in perm:
+                    deficit_samples.append(max(0.0, -float(gains[idx].item())))
+
+            gains_masked = gains.clone()
+            gains_masked[selected] = float("-inf")
+            chosen = int(gains_masked.argmax())
+            selected[chosen] = True
+            pen_accum = pen_accum + K[chosen]
+
+        return deficit_samples
+
     # ----------------------------------------------- differentiable slate score
 
     def compute_slate_score(

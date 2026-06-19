@@ -137,3 +137,91 @@ def get_item_embeddings_for_ild(diversity_module, num_items: int) -> np.ndarray:
         idx = torch.arange(0, num_items + 1, device=diversity_module.item_emb.weight.device)
         embs = F.normalize(diversity_module.item_emb(idx), dim=-1)
     return embs.cpu().numpy()
+
+
+@torch.no_grad()
+def compute_pool_statistics(cfg, eval_seqs: dict, retriever, faiss_index,
+                            diversity_module, max_users: int = None) -> dict:
+    """
+    Aggregates r_perp (min retrieval score in the top-m pool) and
+    kappa_max (max pairwise kernel value over the pool, i != j) across
+    test users, as needed for Table IV / Eq. (7).
+
+    Returns: {"r_perp": float, "kappa_max": float, "n_users": int}
+
+    Example:
+        stats = compute_pool_statistics(cfg, test_seqs, retriever, faiss_index, div)
+        alpha_star = compute_alpha_star(stats["r_perp"], stats["kappa_max"], cfg.k)
+    """
+    retriever.eval()
+    device = cfg.device
+
+    r_perp_vals, kappa_max_vals = [], []
+    items = list(eval_seqs.items())
+    if max_users is not None:
+        items = items[:max_users]
+
+    for u, (hist_seq, target) in tqdm(items, desc="Pool statistics (r_perp, kappa_max)"):
+        if len(hist_seq) == 0:
+            continue
+
+        seq_t = _get_query_window(hist_seq, cfg).unsqueeze(0).to(device)
+        query = retriever.get_user_embedding(seq_t).cpu().numpy()[0]
+        cand_ids, scores = faiss_index.search(query, cfg.m)
+        if len(scores) == 0:
+            continue
+
+        r_perp_vals.append(float(np.min(scores)))
+
+        items_t = torch.LongTensor(cand_ids.tolist()).to(device)
+        embs = diversity_module.get_embeddings(items_t)
+        K = diversity_module.kernel_matrix(embs)
+        N = K.shape[0]
+        if N >= 2:
+            K_offdiag = K.masked_fill(torch.eye(N, dtype=torch.bool, device=device), float("-inf"))
+            kappa_max_vals.append(float(K_offdiag.max().item()))
+
+    return {
+        "r_perp": float(np.mean(r_perp_vals)) if r_perp_vals else 0.0,
+        "kappa_max": float(np.mean(kappa_max_vals)) if kappa_max_vals else 0.0,
+        "n_users": len(r_perp_vals),
+    }
+
+
+@torch.no_grad()
+def compute_average_deficit(cfg, eval_seqs: dict, retriever, faiss_index,
+                            diversity_module, alpha: float,
+                            num_x_samples: int = 5, max_users: int = None) -> float:
+    """
+    Definition 4: delta_bar(alpha), estimated by greedy rollouts pooled
+    across test users.
+
+    Example:
+        d_bar = compute_average_deficit(cfg, test_seqs, retriever, faiss_index,
+                                       div, alpha=0.617)
+    """
+    retriever.eval()
+    device = cfg.device
+
+    all_samples = []
+    items = list(eval_seqs.items())
+    if max_users is not None:
+        items = items[:max_users]
+
+    for u, (hist_seq, target) in tqdm(items, desc=f"Average deficit rollout (alpha={alpha:.3f})"):
+        if len(hist_seq) == 0:
+            continue
+
+        seq_t = _get_query_window(hist_seq, cfg).unsqueeze(0).to(device)
+        query = retriever.get_user_embedding(seq_t).cpu().numpy()[0]
+        cand_ids, scores = faiss_index.search(query, cfg.m)
+        if len(cand_ids) < cfg.k:
+            continue
+
+        samples = diversity_module.estimate_average_deficit(
+            cand_ids.tolist(), scores.tolist(), alpha, cfg.k,
+            num_x_samples=num_x_samples,
+        )
+        all_samples.extend(samples)
+
+    return float(np.mean(all_samples)) if all_samples else 0.0
