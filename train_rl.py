@@ -30,11 +30,34 @@ from env import SlateEnv
 from evaluate import evaluate_srs, evaluate_icsrec_greedy, get_item_embeddings_for_ild
 
 
-def compute_normalized_advantage(deltas: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    """A_bar_t = (delta_t - mu_delta) / (sigma_delta + eps), Eq. (11)."""
+def compute_normalized_advantage(deltas: torch.Tensor, eps: float = 1e-3,
+                                clip: float = 10.0) -> torch.Tensor:
+    """
+    A_bar_t = (delta_t - mu_delta) / (sigma_delta + eps), Eq. (11).
+
+    With the paper's literal eps (implicitly ~0) and no clip, a mini-batch
+    whose TD residuals happen to cluster tightly (very plausible here, since
+    ~75-80% of transitions share the same fixed miss-penalty reward -p_miss)
+    makes sigma_delta collapse toward 0, and any single sample that differs
+    even slightly then gets an unbounded advantage. I confirmed this
+    empirically: a batch of 31 identical deltas plus one differing by 1e-5
+    produces sigma_delta ~ 1.7e-6 and an advantage of several units from
+    that tiny perturbation alone; with a real hit-vs-miss reward gap mixed
+    into an otherwise-tight cluster, this routinely produces advantages in
+    the hundreds to thousands, which is the direct cause of the actor_loss
+    exploding by 9 orders of magnitude over 100 epochs in real training
+    (see the diagnosis in chat: -309 at epoch 1 to -1.4e8 by epoch 30).
+
+    Raising eps to a non-negligible floor and hard-clipping the result are
+    both standard, defensible stabilizers (the same idea as PPO's advantage
+    clipping) and don't change what the advantage is "trying to do" --
+    just bounds how much a single degenerate batch can dominate one
+    gradient step.
+    """
     mu = deltas.mean()
     sigma = deltas.std(unbiased=False)
-    return (deltas - mu) / (sigma + eps)
+    adv = (deltas - mu) / (sigma + eps)
+    return torch.clamp(adv, -clip, clip)
 
 
 def train_one_epoch(cfg, env: SlateEnv, actor: Actor, critic: Critic,
@@ -86,7 +109,8 @@ def train_one_epoch(cfg, env: SlateEnv, actor: Actor, critic: Critic,
 
         with torch.no_grad():
             delta = rewards + cfg.gamma * v_next - v_curr
-            advantage = compute_normalized_advantage(delta)
+            advantage = compute_normalized_advantage(
+                delta, eps=cfg.advantage_eps, clip=cfg.advantage_clip)
 
         # ---------------- actor loss (Eq. 13) ----------------
         logp_cur = actor.log_prob_of(states, a_tilde_beh)

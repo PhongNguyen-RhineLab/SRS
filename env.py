@@ -79,12 +79,44 @@ class SlateEnv:
             R_t = w_t * (1 + rho * (k-1-rank)/k)   if target in slate
                 = -p_miss                           otherwise
         w_t = 1 (no per-target rating available, as in reported runs).
+
+        If cfg.diversity_reward_weight > 0 (off by default -- see config.py
+        for why), adds lambda * realized_ILD(slate) on top. This is a
+        deviation from the paper's literal Eq. 9, added because nothing in
+        the hit/rank-only reward stops alpha from drifting to 1.0 (confirmed
+        in a real training run -- see config.py's comment for details).
         """
         cfg = self.cfg
         if target in slate:
             rank = slate.index(target)  # 0-indexed position
-            return 1.0 * (1.0 + cfg.rho * (cfg.k - 1 - rank) / cfg.k)
-        return -cfg.p_miss
+            reward = 1.0 * (1.0 + cfg.rho * (cfg.k - 1 - rank) / cfg.k)
+        else:
+            reward = -cfg.p_miss
+
+        if cfg.diversity_reward_weight > 0:
+            reward += cfg.diversity_reward_weight * self._realized_ild(slate)
+
+        return reward
+
+    @torch.no_grad()
+    def _realized_ild(self, slate: list) -> float:
+        """
+        Mean pairwise cosine distance within the slate, using the diversity
+        module's CURRENT embeddings (not detached/frozen, since this is only
+        used as a scalar reward signal, never backpropagated through).
+        """
+        if len(slate) < 2:
+            return 0.0
+        items_t = torch.LongTensor(slate).to(self.device)
+        embs = self.diversity_module.get_embeddings(items_t)
+        sims = embs @ embs.T
+        n = len(slate)
+        total, count = 0.0, 0
+        for i in range(n):
+            for j in range(i + 1, n):
+                total += (1.0 - sims[i, j].item())
+                count += 1
+        return total / count if count else 0.0
 
     def step(self, user: int, t: int, actor, training: bool = True):
         """

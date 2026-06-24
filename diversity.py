@@ -26,7 +26,8 @@ import torch.nn.functional as F
 
 class DiversityModule(nn.Module):
 
-    def __init__(self, num_items: int, emb_dim: int = 64):
+    def __init__(self, num_items: int, emb_dim: int = 64,
+                log_sigma_min: float = -2.0, log_sigma_max: float = 2.0):
         super().__init__()
         self.num_items = num_items
         self.emb_dim   = emb_dim
@@ -36,13 +37,29 @@ class DiversityModule(nn.Module):
 
         # Learnable bandwidth: sigma = exp(log_sigma)
         self.log_sigma = nn.Parameter(torch.zeros(1))
+        # log_sigma is left UNCONSTRAINED as a parameter, but _sigma() clamps
+        # it before exponentiating. Why: minimizing L_hit on positive-reward
+        # transitions gives gradient descent a one-directional incentive to
+        # shrink sigma toward 0 (since a smaller penalty term trivially
+        # raises the slate score, lowering the loss), regardless of whether
+        # the embeddings themselves are well-separated. I verified this
+        # empirically over a real (synthetic-data) training run: sigma fell
+        # monotonically from 1.0 to 0.56 in just 15 epochs with no sign of
+        # leveling off. Left unchecked over 100 epochs, sigma can collapse
+        # far enough that kappa(i,j) underflows toward 0 for nearly all
+        # pairs, silently turning off the diversity penalty regardless of
+        # alpha. Clamping keeps sigma in [exp(-2), exp(2)] ~= [0.135, 7.39],
+        # a wide enough range to still learn a meaningful bandwidth.
+        self.log_sigma_min = log_sigma_min
+        self.log_sigma_max = log_sigma_max
 
         nn.init.xavier_uniform_(self.item_emb.weight[1:])
 
     # ------------------------------------------------------------------ kernel
 
     def _sigma(self) -> torch.Tensor:
-        return torch.exp(self.log_sigma)
+        clamped = torch.clamp(self.log_sigma, self.log_sigma_min, self.log_sigma_max)
+        return torch.exp(clamped)
 
     def get_embeddings(self, item_ids: torch.Tensor) -> torch.Tensor:
         """L2-normalised embeddings; (N,) -> (N, D)."""

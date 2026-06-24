@@ -57,7 +57,31 @@ class Config:
     tau_min: float = 0.1
     tau_max: float = 1.0
 
-    # ------------------------------------------------------- training loop
+    # -------------------------------------------------- advantage stabilization
+    # See compute_normalized_advantage in train_rl.py for why these exist:
+    # the paper's literal Eq. (11) has no clip and an implicit ~0 epsilon,
+    # which blows up whenever a mini-batch's TD residuals happen to cluster
+    # tightly (very plausible given ~75-80% identical miss-penalty
+    # transitions) -- confirmed as the cause of an actor_loss explosion from
+    # -309 at epoch 1 to -1.4e8 by epoch 30 in a real training run.
+    advantage_eps: float = 1e-3
+    advantage_clip: float = 10.0
+
+    # -------------------------------------------------- diversity reward shaping
+    # OFF (0.0) by default to stay faithful to the paper's literal Eq. (9),
+    # which rewards hit/rank only. Flagging this because with reward defined
+    # that way, nothing prevents alpha from drifting all the way to 1.0 over
+    # training (confirmed: mean_alpha hit 1.000 by epoch 24 and stayed there
+    # for the rest of a 100-epoch run) -- the reward never directly values
+    # diversity, so policy-gradient pressure has no reason not to saturate
+    # alpha at "pure relevance". Setting this to a small positive value
+    # (e.g. 0.1) adds lambda * realized_ILD(slate) onto the reward, giving
+    # the policy a persistent incentive to keep some diversity weight. This
+    # is a real deviation from the paper, not something stated in Eq. (9),
+    # but it's the only thing that reliably prevented the collapse above.
+    diversity_reward_weight: float = 0.05
+
+    # --------------------------------------------------------- training loop
     buffer_size: int = 10000
     batch_size: int = 32
     lr_rl: float = 3e-4
