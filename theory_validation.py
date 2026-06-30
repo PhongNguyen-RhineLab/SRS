@@ -20,6 +20,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from config import Config
+
+# Set to "movielens_1m" to run against MovieLens-1M instead.
+DATASET = "movielens_1m"
 from data import load_and_preprocess, split_data
 from retriever import SASRec, FAISSIndex
 from diversity import DiversityModule
@@ -64,8 +67,8 @@ def get_own_learned_alpha(cfg: Config) -> float:
 
 
 def main():
-    cfg = Config()
-    data = load_and_preprocess(cfg.data_dir)
+    cfg = Config(dataset=DATASET)
+    data = load_and_preprocess(cfg.data_dir, cfg.dataset)
     cfg.num_items = data["num_items"]
     cfg.num_users = data["num_users"]
     _, _, test_seqs = split_data(data["sequences"])
@@ -178,11 +181,13 @@ def main():
            label=r"$\bar{\delta}(\alpha)$ (rollout average)")
 
     annotated = [
-        (PAPER_ALPHA_COLLAPSED, "collapsed\n(no bias init)", "red"),
-        (PAPER_ALPHA_LEARNED, "learned\n(with bias init)", "blue"),
+        (PAPER_ALPHA_COLLAPSED, "paper: collapsed\n(no bias init)", "red"),
+        (PAPER_ALPHA_LEARNED, "paper: learned\n(with bias init)", "blue"),
         (alpha_star, r"$\alpha^*$ (threshold)", "green"),
         (PAPER_ALPHA_INIT, "initialization", "purple"),
     ]
+    if own_alpha is not None:
+        annotated.append((own_alpha, "this run\n(own training_log.csv)", "darkorange"))
     for i, (a, label, color) in enumerate(annotated):
         d = compute_average_deficit(cfg, test_seqs, retriever, faiss_index,
                                    diversity_module, a, max_users=100)

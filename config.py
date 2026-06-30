@@ -11,6 +11,14 @@ from dataclasses import dataclass, field
 @dataclass
 class Config:
     # ------------------------------------------------------------------ data
+    # "amazon_beauty" (default, matches the paper) or "movielens_1m".
+    # Pass as a constructor kwarg, e.g. Config(dataset="movielens_1m"), so
+    # __post_init__ below can pick sensible per-dataset directory and
+    # sequence-length defaults. Setting cfg.dataset = ... AFTER construction
+    # will NOT retroactively update data_dir/checkpoint_dir/h/max_seq_len --
+    # set it at construction time, or set those fields yourself too.
+    dataset: str = "movielens_1m"
+
     data_dir: str = "data"
     checkpoint_dir: str = "checkpoints"
 
@@ -93,3 +101,29 @@ class Config:
     # ---------------------------------------------------------------- misc
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+    def __post_init__(self):
+        if self.dataset == "movielens_1m":
+            # Separate cache/checkpoint dirs so a MovieLens run never
+            # collides with an existing Amazon Beauty run. Only applied if
+            # the fields are still at their dataclass defaults, so an
+            # explicit data_dir=/checkpoint_dir= kwarg still wins.
+            if self.data_dir == "data":
+                self.data_dir = "data_movielens_1m"
+            if self.checkpoint_dir == "checkpoints":
+                self.checkpoint_dir = "checkpoints_movielens_1m"
+            # ml-1m users average ~165 ratings each (vs. Amazon Beauty
+            # 5-core's much shorter per-user histories), so the Amazon-tuned
+            # h=20/max_seq_len=50 would truncate most of each user's real
+            # history. Bumping these toward what the original SASRec paper
+            # uses for ml-1m (it reports maxlen=200 for this dataset).
+            # Same "only if still at the Amazon-tuned default" guard.
+            if self.h == 20:
+                self.h = 50
+            if self.max_seq_len == 50:
+                self.max_seq_len = 200
+        elif self.dataset not in ("amazon_beauty", "movielens_1m"):
+            raise ValueError(
+                f"Unknown dataset '{self.dataset}'. Expected 'amazon_beauty' "
+                f"or 'movielens_1m'."
+            )

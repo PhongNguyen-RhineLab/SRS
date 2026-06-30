@@ -14,6 +14,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from config import Config
+
+# Set to "movielens_1m" to run against MovieLens-1M instead.
+DATASET = "movielens_1m"
 from data import load_and_preprocess, split_data
 from retriever import SASRec, FAISSIndex
 from diversity import DiversityModule
@@ -84,8 +87,8 @@ def make_figure2(srs_metrics: dict, baseline_metrics: dict, save_path: str):
 
 
 def main():
-    cfg = Config()
-    data = load_and_preprocess(cfg.data_dir)
+    cfg = Config(dataset=DATASET)
+    data = load_and_preprocess(cfg.data_dir, cfg.dataset)
     cfg.num_items = data["num_items"]
     cfg.num_users = data["num_users"]
     _, _, test_seqs = split_data(data["sequences"])

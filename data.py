@@ -1,5 +1,12 @@
 """
-Data loading and preprocessing for Amazon Beauty 2014 5-core.
+Data loading and preprocessing. Supports two datasets, dispatched by
+cfg.dataset:
+  - "amazon_beauty" (default): Amazon Beauty 2014 5-core
+  - "movielens_1m": MovieLens-1M, the classic SASRec benchmark
+
+Both datasets get mapped into the same {user: [item_id, ...]} sequence
+format the rest of the pipeline expects, then share the same LL2O split,
+RetrieverDataset, and DataLoader logic below.
 
 The paper uses Leave-Last-2-Out (LL2O):
   train   : [i_0, ..., i_{n-3}]          (sliding window for retriever training)
@@ -16,6 +23,7 @@ import os
 import gzip
 import json
 import pickle
+import zipfile
 import requests
 import numpy as np
 from collections import defaultdict
@@ -24,7 +32,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 
 
-# --------------------------------------------------------------------------- download
+# --------------------------------------------------------------------------- download (Amazon Beauty)
 
 BEAUTY_URL = (
     "http://snap.stanford.edu/data/amazon/productGraph/"
@@ -36,7 +44,7 @@ BEAUTY_URL_ALT = (
 )
 
 
-def download_dataset(data_dir: str) -> str:
+def download_amazon_beauty(data_dir: str) -> str:
     os.makedirs(data_dir, exist_ok=True)
     filepath = os.path.join(data_dir, "reviews_Beauty_5.json.gz")
 
@@ -68,9 +76,59 @@ def download_dataset(data_dir: str) -> str:
     )
 
 
-# --------------------------------------------------------------------------- preprocess
+# --------------------------------------------------------------------------- download (MovieLens-1M)
 
-def load_and_preprocess(data_dir: str) -> dict:
+ML1M_URL = "https://files.grouplens.org/datasets/movielens/ml-1m.zip"
+
+
+def download_movielens_1m(data_dir: str) -> str:
+    """
+    Downloads and extracts ml-1m, returns the path to ratings.dat.
+
+    Note: I could not actually exercise this download in my sandbox (the
+    network allowlist here doesn't include files.grouplens.org), so the
+    parsing logic below (load_and_preprocess_movielens_1m) was verified
+    against a synthetic ratings.dat I generated locally in the exact
+    "UserID::MovieID::Rating::Timestamp" format, not against the real file.
+    The format itself is GroupLens's long-stable, well-documented format,
+    so I'm confident in the parser, but you're the first one actually
+    running it against the real download.
+    """
+    os.makedirs(data_dir, exist_ok=True)
+    zip_path = os.path.join(data_dir, "ml-1m.zip")
+    extract_dir = os.path.join(data_dir, "ml-1m")
+    ratings_path = os.path.join(extract_dir, "ratings.dat")
+
+    if os.path.exists(ratings_path):
+        print("MovieLens-1M ratings.dat already present, skipping download.")
+        return ratings_path
+
+    print(f"Downloading from {ML1M_URL} ...")
+    r = requests.get(ML1M_URL, stream=True, timeout=60)
+    r.raise_for_status()
+    total = int(r.headers.get("content-length", 0))
+    with open(zip_path, "wb") as f:
+        with tqdm(total=total, unit="B", unit_scale=True, desc="ml-1m.zip") as pbar:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+                pbar.update(len(chunk))
+    print("Download complete, extracting...")
+
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(data_dir)
+
+    if not os.path.exists(ratings_path):
+        raise RuntimeError(
+            f"Expected {ratings_path} after extracting ml-1m.zip, but it "
+            f"wasn't there. The archive layout may have changed -- check "
+            f"{extract_dir} manually."
+        )
+    return ratings_path
+
+
+# --------------------------------------------------------------------------- preprocess (Amazon Beauty)
+
+def load_and_preprocess_amazon_beauty(data_dir: str) -> dict:
     """
     Returns a dict with keys:
         sequences  : {user_idx: [item_idx, ...]}  (1-indexed, chronological)
@@ -84,7 +142,7 @@ def load_and_preprocess(data_dir: str) -> dict:
         with open(cache_path, "rb") as f:
             return pickle.load(f)
 
-    filepath = download_dataset(data_dir)
+    filepath = download_amazon_beauty(data_dir)
 
     print("Parsing and preprocessing dataset...")
     triples = []  # (user_str, item_str, timestamp)
@@ -97,6 +155,51 @@ def load_and_preprocess(data_dir: str) -> dict:
                 int(rev["unixReviewTime"]),
             ))
 
+    return _build_sequences_from_triples(triples, cache_path)
+
+
+# --------------------------------------------------------------------------- preprocess (MovieLens-1M)
+
+def load_and_preprocess_movielens_1m(data_dir: str) -> dict:
+    """
+    Same return format as load_and_preprocess_amazon_beauty.
+
+    ratings.dat lines look like "1::1193::5::978300760" (UserID::MovieID::
+    Rating::Timestamp). We only use UserID, MovieID, and Timestamp here --
+    Rating itself isn't currently wired into the reward/state pipeline (see
+    README: this mirrors how Amazon Beauty's own "overall" rating field is
+    also unused, an existing limitation rather than something new to this
+    dataset).
+    """
+    cache_path = os.path.join(data_dir, "processed.pkl")
+
+    if os.path.exists(cache_path):
+        print("Loading cached preprocessed data...")
+        with open(cache_path, "rb") as f:
+            return pickle.load(f)
+
+    ratings_path = download_movielens_1m(data_dir)
+
+    print("Parsing MovieLens-1M ratings.dat...")
+    triples = []  # (user_str, item_str, timestamp)
+    # ratings.dat is latin-1 encoded per GroupLens's own README for ml-1m.
+    with open(ratings_path, "r", encoding="latin-1") as f:
+        for line in f:
+            parts = line.strip().split("::")
+            if len(parts) != 4:
+                continue
+            user_id, movie_id, _rating, ts = parts
+            triples.append((user_id, movie_id, int(ts)))
+
+    return _build_sequences_from_triples(triples, cache_path)
+
+
+def _build_sequences_from_triples(triples: list, cache_path: str) -> dict:
+    """
+    Shared logic: (user_str, item_str, timestamp) triples -> the
+    {sequences, num_items, num_users, user2idx, item2idx} dict both
+    datasets return, cached to cache_path.
+    """
     # build 1-indexed mappings (0 is padding)
     users_sorted = sorted(set(u for u, _, _ in triples))
     items_sorted = sorted(set(i for _, i, _ in triples))
@@ -139,6 +242,25 @@ def load_and_preprocess(data_dir: str) -> dict:
     print(f"Preprocessed data cached at {cache_path}")
 
     return result
+
+
+# --------------------------------------------------------------------------- dispatcher
+
+def load_and_preprocess(data_dir: str, dataset: str = "amazon_beauty") -> dict:
+    """
+    Dispatches to the right dataset-specific loader. `dataset` defaults to
+    "amazon_beauty" for backward compatibility with existing call sites;
+    pass cfg.dataset explicitly to use MovieLens-1M.
+    """
+    if dataset == "amazon_beauty":
+        return load_and_preprocess_amazon_beauty(data_dir)
+    elif dataset == "movielens_1m":
+        return load_and_preprocess_movielens_1m(data_dir)
+    else:
+        raise ValueError(
+            f"Unknown dataset '{dataset}'. Expected 'amazon_beauty' or "
+            f"'movielens_1m'."
+        )
 
 
 # --------------------------------------------------------------------------- splits

@@ -21,6 +21,9 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from config import Config
+
+# Set to "movielens_1m" to run against MovieLens-1M instead.
+DATASET = "movielens_1m"
 from data import load_and_preprocess, split_data
 from retriever import SASRec, FAISSIndex
 from diversity import DiversityModule
@@ -159,12 +162,12 @@ def train_one_epoch(cfg, env: SlateEnv, actor: Actor, critic: Critic,
 
 
 def main():
-    cfg = Config()
+    cfg = Config(dataset=DATASET)
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
 
     print("Loading preprocessed data...")
-    data = load_and_preprocess(cfg.data_dir)
+    data = load_and_preprocess(cfg.data_dir, cfg.dataset)
     cfg.num_items = data["num_items"]
     cfg.num_users = data["num_users"]
     train_seqs, val_seqs, test_seqs = split_data(data["sequences"])

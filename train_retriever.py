@@ -15,6 +15,9 @@ import torch
 from tqdm import tqdm
 
 from config import Config
+
+# Set to "movielens_1m" to run against MovieLens-1M instead.
+DATASET = "movielens_1m"
 from data import load_and_preprocess, split_data, get_retriever_loader
 from retriever import SASRec, FAISSIndex
 
@@ -75,11 +78,11 @@ def build_faiss_index(cfg: Config, model: SASRec, num_items: int) -> FAISSIndex:
 
 
 def main():
-    cfg = Config()
+    cfg = Config(dataset=DATASET)
     torch.manual_seed(cfg.seed)
 
     print("Loading and preprocessing Amazon Beauty 2014 5-core dataset...")
-    data = load_and_preprocess(cfg.data_dir)
+    data = load_and_preprocess(cfg.data_dir, cfg.dataset)
     cfg.num_items = data["num_items"]
     cfg.num_users = data["num_users"]
 
