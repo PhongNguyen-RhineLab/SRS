@@ -17,7 +17,7 @@ from tqdm import tqdm
 from config import Config
 
 # Set to "movielens_1m" to run against MovieLens-1M instead.
-DATASET = "movielens_1m"
+DATASET = "amazon_beauty"
 from data import load_and_preprocess, split_data, get_retriever_loader
 from retriever import SASRec, FAISSIndex
 

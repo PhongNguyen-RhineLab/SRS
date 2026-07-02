@@ -1,5 +1,5 @@
 """
-Hyperparameters matching Table 1 of the SRS paper.
+Hyperparameters matching Table 1 of the MARS paper.
 
 Example: to change slate size from 10 to 5 just do cfg.k = 5 before passing cfg around.
 """
@@ -17,8 +17,8 @@ class Config:
     # sequence-length defaults. Setting cfg.dataset = ... AFTER construction
     # will NOT retroactively update data_dir/checkpoint_dir/h/max_seq_len --
     # set it at construction time, or set those fields yourself too.
-    dataset: str = "movielens_1m"
-
+    dataset: str = "amazon_beauty"
+    icsrec_ckpt: str = "icsrec_ckpts/ICSRec-SAS-Beauty-0.pt"
     data_dir: str = "data"
     checkpoint_dir: str = "checkpoints"
 
@@ -87,13 +87,15 @@ class Config:
     # the policy a persistent incentive to keep some diversity weight. This
     # is a real deviation from the paper, not something stated in Eq. (9),
     # but it's the only thing that reliably prevented the collapse above.
-    diversity_reward_weight: float = 0.05
+    diversity_reward_weight: float = 0.0
 
     # --------------------------------------------------------- training loop
     buffer_size: int = 10000
     batch_size: int = 32
     lr_rl: float = 3e-4
     lr_sub: float = 1e-3
+    lr_encoder: float = 1e-3  # paper: "LR for Sub + Encoder 1e-3"
+    encoder_pretrain_epochs: int = 30
     steps_per_epoch: int = 500
     num_epochs: int = 100
     eval_every: int = 5
@@ -108,6 +110,8 @@ class Config:
             # collides with an existing Amazon Beauty run. Only applied if
             # the fields are still at their dataclass defaults, so an
             # explicit data_dir=/checkpoint_dir= kwarg still wins.
+            if self.icsrec_ckpt == "icsrec_ckpts/ICSRec-SAS-Beauty-0.pt":
+                self.icsrec_ckpt = "icsrec_ckpts/ICSRec-SAS-ml-1m-0.pt"
             if self.data_dir == "data":
                 self.data_dir = "data_movielens_1m"
             if self.checkpoint_dir == "checkpoints":

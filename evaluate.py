@@ -122,20 +122,20 @@ def evaluate_srs(cfg, eval_seqs: dict, retriever, faiss_index,
     return aggregate_metrics(slates, targets, item_embeddings, cfg.num_items)
 
 
-def get_item_embeddings_for_ild(diversity_module, num_items: int) -> np.ndarray:
+def get_item_embeddings_for_ild(retriever, num_items: int) -> np.ndarray:
     """
     Frozen embeddings used as the common representation space for ILD,
-    per Section 5.1: "we compute ILD ... using the frozen ICSRec item
-    embeddings, so that all methods are scored by a common, fixed
-    representation space."
+    per Section 5.1: ILD is measured using the frozen retriever item
+    embeddings, so every method is scored in a single fixed space that is
+    independent of the diversity module being evaluated.
 
-    Here we use the diversity module's learned embeddings as the fixed
-    space (role-equivalent stand-in for the frozen retriever embeddings).
+    Returns (num_items+1, D), 1-indexed by item ID, L2-normalised rows;
+    row 0 is the padding slot (all zeros) and is never indexed by a real slate.
     """
     import torch.nn.functional as F
     with torch.no_grad():
-        idx = torch.arange(0, num_items + 1, device=diversity_module.item_emb.weight.device)
-        embs = F.normalize(diversity_module.item_emb(idx), dim=-1)
+        idx = torch.arange(0, num_items + 1, device=retriever.item_emb.weight.device)
+        embs = F.normalize(retriever.item_emb(idx), dim=-1)
     return embs.cpu().numpy()
 
 

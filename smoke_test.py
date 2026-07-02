@@ -120,7 +120,7 @@ def main():
         print(f"  epoch {ep}: {logs}")
 
     print("[7/7] Running evaluation (val split)...")
-    item_embs = get_item_embeddings_for_ild(div, cfg.num_items)
+    item_embs = get_item_embeddings_for_ild(retriever, cfg.num_items)
     baseline_metrics = evaluate_icsrec_greedy(cfg, val_seqs, retriever, index, item_embs)
     srs_metrics = evaluate_srs(cfg, val_seqs, retriever, index, div, state_enc, actor, item_embs)
     print(f"  baseline: {baseline_metrics}")

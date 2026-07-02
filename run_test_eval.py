@@ -16,7 +16,7 @@ import matplotlib.pyplot as plt
 from config import Config
 
 # Set to "movielens_1m" to run against MovieLens-1M instead.
-DATASET = "movielens_1m"
+DATASET = "amazon_beauty"
 from data import load_and_preprocess, split_data
 from retriever import SASRec, FAISSIndex
 from diversity import DiversityModule
@@ -27,13 +27,9 @@ from evaluate import evaluate_srs, evaluate_icsrec_greedy, get_item_embeddings_f
 def load_checkpoints(cfg: Config):
     device = cfg.device
 
-    retriever = SASRec(
-        cfg.num_items, cfg.ret_emb_dim, cfg.max_seq_len,
-        cfg.ret_num_heads, cfg.ret_num_layers, cfg.ret_dropout,
-    ).to(device)
-    retriever.load_state_dict(torch.load(
-        os.path.join(cfg.checkpoint_dir, "sasrec_retriever.pt"), map_location=device))
-    retriever.eval()
+    from icsrec_retriever import load_icsrec_retriever
+    retriever = load_icsrec_retriever(
+        cfg.icsrec_ckpt, cfg.num_items, hidden_size=cfg.ret_emb_dim, device=cfg.device)
 
     faiss_index = FAISSIndex.load(
         os.path.join(cfg.checkpoint_dir, "faiss_index.npy"), cfg.ret_emb_dim)
@@ -64,7 +60,7 @@ def make_figure2(srs_metrics: dict, baseline_metrics: dict, save_path: str):
     ax.scatter(baseline_metrics["HR@k"], baseline_metrics["ILD"],
               color="red", marker="D", s=80, label="ICSRec greedy top-10")
     ax.scatter(srs_metrics["HR@k"], srs_metrics["ILD"],
-              color="blue", marker="*", s=150, label="SRS (ours)")
+              color="blue", marker="*", s=150, label="MARS (ours)")
 
     ax.annotate(
         f"HR@10={baseline_metrics['HR@k']:.4f}\nILD={baseline_metrics['ILD']:.4f}",
@@ -95,12 +91,12 @@ def main():
 
     print("Loading trained checkpoints...")
     retriever, faiss_index, diversity_module, state_encoder, actor = load_checkpoints(cfg)
-    item_embs = get_item_embeddings_for_ild(diversity_module, cfg.num_items)
+    item_embs = get_item_embeddings_for_ild(retriever, cfg.num_items)
 
     print("\nEvaluating ICSRec top-10 (greedy) baseline on test set...")
     baseline_metrics = evaluate_icsrec_greedy(cfg, test_seqs, retriever, faiss_index, item_embs)
 
-    print("\nEvaluating SRS (ours) on test set...")
+    print("\nEvaluating MARS (ours) on test set...")
     srs_metrics = evaluate_srs(cfg, test_seqs, retriever, faiss_index,
                               diversity_module, state_encoder, actor, item_embs)
 
@@ -112,7 +108,7 @@ def main():
           f"{baseline_metrics['HR@k']:<10.4f}{baseline_metrics['NDCG@k']:<10.4f}"
           f"{baseline_metrics['MRR@k']:<10.4f}{baseline_metrics['ILD']:<10.4f}"
           f"{baseline_metrics['Coverage']:<10.4f}")
-    print(f"{'Ours (SRS)':<25}"
+    print(f"{'Ours (MARS)':<25}"
           f"{srs_metrics['HR@k']:<10.4f}{srs_metrics['NDCG@k']:<10.4f}"
           f"{srs_metrics['MRR@k']:<10.4f}{srs_metrics['ILD']:<10.4f}"
           f"{srs_metrics['Coverage']:<10.4f}")

@@ -252,10 +252,8 @@ def load_and_preprocess(data_dir: str, dataset: str = "amazon_beauty") -> dict:
     "amazon_beauty" for backward compatibility with existing call sites;
     pass cfg.dataset explicitly to use MovieLens-1M.
     """
-    if dataset == "amazon_beauty":
-        return load_and_preprocess_amazon_beauty(data_dir)
-    elif dataset == "movielens_1m":
-        return load_and_preprocess_movielens_1m(data_dir)
+    if dataset in ("amazon_beauty", "movielens_1m"):
+        return load_and_preprocess_icsrec_txt(data_dir, dataset)
     else:
         raise ValueError(
             f"Unknown dataset '{dataset}'. Expected 'amazon_beauty' or "
@@ -321,6 +319,35 @@ class RetrieverDataset(Dataset):
             torch.LongTensor([target]),
         )
 
+ICSREC_TXT = {"amazon_beauty": "Beauty.txt", "movielens_1m": "ml-1m.txt"}
+
+def load_and_preprocess_icsrec_txt(data_dir: str, dataset: str) -> dict:
+    """
+    Load sequences from the official ICSRec data files. Each line:
+    "user_id item1 item2 ... itemN", items already 1-indexed in the SAME id
+    space as the released ICSRec checkpoint. IDs used verbatim (no remap) so
+    retriever.item_emb rows line up with these item ids.
+    """
+    import os
+    fname = ICSREC_TXT[dataset]
+    path = os.path.join(data_dir, fname)
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"{path} not found. Copy the official ICSRec data file here:\n"
+            f"  cp <ICSRec>/data/{fname} {path}")
+    sequences, max_item = {}, 0
+    with open(path) as f:
+        for line in f:
+            toks = line.split()
+            if not toks:
+                continue
+            u = int(toks[0])
+            items = list(map(int, toks[1:]))
+            if len(items) >= 3:                # need >=3 for LL2O
+                sequences[u] = items
+                max_item = max(max_item, max(items))
+    print(f"[{dataset}] loaded {len(sequences)} sequences, max_item={max_item}")
+    return {"sequences": sequences, "num_items": max_item, "num_users": len(sequences)}
 
 def get_retriever_loader(train_seqs: dict, max_seq_len: int,
                          batch_size: int, shuffle: bool = True) -> DataLoader:

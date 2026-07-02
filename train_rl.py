@@ -23,7 +23,7 @@ from tqdm import tqdm
 from config import Config
 
 # Set to "movielens_1m" to run against MovieLens-1M instead.
-DATASET = "movielens_1m"
+DATASET = "amazon_beauty"
 from data import load_and_preprocess, split_data
 from retriever import SASRec, FAISSIndex
 from diversity import DiversityModule
@@ -100,18 +100,19 @@ def train_one_epoch(cfg, env: SlateEnv, actor: Actor, critic: Critic,
         states      = torch.stack([b.state for b in batch]).to(device)
         next_states = torch.stack([b.next_state for b in batch]).to(device)
         a_tilde_beh = torch.stack([b.a_tilde for b in batch]).to(device)
-        rewards     = torch.FloatTensor([b.reward for b in batch]).to(device)
+        rewards = torch.FloatTensor([b.reward for b in batch]).to(device)
+        dones = torch.FloatTensor([float(b.done) for b in batch]).to(device)
 
         # ---------------- critic loss (Eq. 10) ----------------
         with torch.no_grad():
             v_next = critic(next_states)
-            td_target = rewards + cfg.gamma * v_next
+            td_target = rewards + cfg.gamma * (1.0 - dones) * v_next
 
         v_curr = critic(states)
         critic_loss = F.mse_loss(v_curr, td_target.detach())
 
         with torch.no_grad():
-            delta = rewards + cfg.gamma * v_next - v_curr
+            delta = rewards + cfg.gamma * (1.0 - dones) * v_next - v_curr
             advantage = compute_normalized_advantage(
                 delta, eps=cfg.advantage_eps, clip=cfg.advantage_clip)
 
@@ -129,6 +130,16 @@ def train_one_epoch(cfg, env: SlateEnv, actor: Actor, critic: Critic,
                      + bc_term - entropy_term)
 
         rl_loss = critic_loss + actor_loss
+
+        if len(epoch_logs["actor_loss"]) == 0:  # log once per epoch, first minibatch
+            with torch.no_grad():
+                print(f"    [dbg] pg={-(advantage.detach() * logp_cur).mean().item():.2f} "
+                      f"bc={bc_term.item():.2f} ent_term={entropy_term.item():.2f} "
+                      f"| logp_cur[min/mean/max]={logp_cur.min().item():.1f}/"
+                      f"{logp_cur.mean().item():.1f}/{logp_cur.max().item():.1f} "
+                      f"| adv[min/max]={advantage.min().item():.2f}/{advantage.max().item():.2f} "
+                      f"| logstd[min/max]={actor.forward(states)[1].min().item():.2f}/"
+                      f"{actor.forward(states)[1].max().item():.2f}")
 
         rl_optimizer.zero_grad()
         rl_loss.backward()
@@ -176,19 +187,9 @@ def main():
     print(f"Using device: {device}")
 
     # ---------------- load frozen retriever + FAISS index ----------------
-    retriever = SASRec(
-        num_items=cfg.num_items, emb_dim=cfg.ret_emb_dim,
-        max_seq_len=cfg.max_seq_len, num_heads=cfg.ret_num_heads,
-        num_layers=cfg.ret_num_layers, dropout=cfg.ret_dropout,
-    ).to(device)
-
-    ckpt_path = os.path.join(cfg.checkpoint_dir, "sasrec_retriever.pt")
-    if not os.path.exists(ckpt_path):
-        raise FileNotFoundError(
-            f"{ckpt_path} not found. Run train_retriever.py first."
-        )
-    retriever.load_state_dict(torch.load(ckpt_path, map_location=device))
-    retriever.eval()
+    from icsrec_retriever import load_icsrec_retriever
+    retriever = load_icsrec_retriever(
+        cfg.icsrec_ckpt, cfg.num_items, hidden_size=cfg.ret_emb_dim, device=device)
     for p in retriever.parameters():
         p.requires_grad_(False)
 
@@ -201,6 +202,14 @@ def main():
         cfg.num_items, item_emb_dim=cfg.ret_emb_dim,
         state_dim=cfg.state_dim, h=cfg.h,
     ).to(device)
+    # muc 6: load pretrained encoder and freeze (paper: "frozen after pretraining")
+    enc_path = os.path.join(cfg.checkpoint_dir, "state_encoder.pt")
+    if not os.path.exists(enc_path):
+        raise FileNotFoundError(f"{enc_path} not found. Run pretrain_encoder.py first.")
+    state_encoder.load_state_dict(torch.load(enc_path, map_location=device))
+    state_encoder.eval()
+    for p in state_encoder.parameters():
+        p.requires_grad_(False)
     actor = Actor(cfg.state_dim, cfg.hidden_dim, cfg.alpha_init_bias).to(device)
     critic = Critic(cfg.state_dim, cfg.hidden_dim).to(device)
 
@@ -231,7 +240,7 @@ def main():
 
         val_hr, val_ndcg = 0.0, 0.0
         if epoch % cfg.eval_every == 0 or epoch == 1 or epoch == cfg.num_epochs:
-            item_embs = get_item_embeddings_for_ild(diversity_module, cfg.num_items)
+            item_embs = get_item_embeddings_for_ild(retriever, cfg.num_items)
             val_metrics = evaluate_srs(
                 cfg, val_seqs, retriever, faiss_index, diversity_module,
                 state_encoder, actor, item_embs,
@@ -249,8 +258,6 @@ def main():
     # ---------------- save checkpoints ----------------
     torch.save(diversity_module.state_dict(),
                os.path.join(cfg.checkpoint_dir, "diversity_module.pt"))
-    torch.save(state_encoder.state_dict(),
-               os.path.join(cfg.checkpoint_dir, "state_encoder.pt"))
     torch.save(actor.state_dict(), os.path.join(cfg.checkpoint_dir, "actor.pt"))
     torch.save(critic.state_dict(), os.path.join(cfg.checkpoint_dir, "critic.pt"))
     print("All Stage-3 checkpoints saved.")

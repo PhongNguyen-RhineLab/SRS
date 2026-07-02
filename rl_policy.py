@@ -26,7 +26,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
-LOG_STD_MIN = -5.0
+LOG_STD_MIN = -2.0
 LOG_STD_MAX = 2.0
 
 
@@ -105,6 +105,13 @@ class Actor(nn.Module):
         log_std = self.log_std_head(h).clamp(LOG_STD_MIN, LOG_STD_MAX)
         return mu, log_std
 
+    @staticmethod
+    def _squash_correction(a_tilde: torch.Tensor) -> torch.Tensor:
+        # -Σ_d[log a_d + log(1-a_d)] with a=sigmoid(a_tilde). Stable form:
+        #   log a + log(1-a) = -softplus(-u) - softplus(u)
+        #   => the term subtracted in Eq. (7) equals softplus(u)+softplus(-u).
+        return (F.softplus(a_tilde) + F.softplus(-a_tilde)).sum(dim=-1)
+
     def sample(self, state: torch.Tensor, deterministic: bool = False):
         """
         Returns:
@@ -114,17 +121,13 @@ class Actor(nn.Module):
         """
         mu, log_std = self.forward(state)
         std = log_std.exp()
+        dist = Normal(mu, std)
 
-        if deterministic:
-            a_tilde = mu
-        else:
-            dist = Normal(mu, std)
-            a_tilde = dist.rsample()
-
+        a_tilde = mu if deterministic else dist.rsample()
         action = torch.sigmoid(a_tilde)
 
-        dist = Normal(mu, std)
-        log_prob = dist.log_prob(a_tilde).sum(dim=-1)  # Eq. (7): sum over dims
+        # Eq. (7): squashed-action log density = Gaussian - sigmoid Jacobian
+        log_prob = dist.log_prob(a_tilde).sum(dim=-1) + self._squash_correction(a_tilde)
 
         return action, log_prob, a_tilde
 
@@ -134,14 +137,26 @@ class Actor(nn.Module):
         mu, log_std = self.forward(state)
         std = log_std.exp()
         dist = Normal(mu, std)
-        return dist.log_prob(a_tilde).sum(dim=-1)
+        # Eq. (7). The correction depends only on the stored a_tilde, so it is
+        # constant w.r.t. phi and does NOT change the gradient of the -A*log pi
+        # term; it is added so this returns the true log pi(a|s).
+        return dist.log_prob(a_tilde).sum(dim=-1) + self._squash_correction(a_tilde)
 
     def entropy(self, state: torch.Tensor) -> torch.Tensor:
-        """Differential entropy of the pre-squash Gaussian (per-batch mean)."""
-        _, log_std = self.forward(state)
-        # entropy of N(mu, sigma^2) per-dim = 0.5*log(2*pi*e*sigma^2)
-        ent = 0.5 * (1.0 + torch.log(2 * torch.pi * torch.exp(2 * log_std)))
-        return ent.sum(dim=-1)
+        """
+        H[pi] of the SQUASHED policy (Eq. 7). No closed form, so estimate it as
+        E_a[-log pi(a)] with one reparameterised sample (SAC-style). Unlike the
+        old Gaussian entropy (which depends only on sigma), this is mu-dependent:
+        as mu drives alpha toward 0/1 the Jacobian term log(a(1-a)) -> -inf, so
+        H -> -inf and the entropy bonus pushes alpha off the boundary. This is
+        the mechanism that keeps alpha from collapsing to 1.0.
+        """
+        mu, log_std = self.forward(state)
+        std = log_std.exp()
+        dist = Normal(mu, std)
+        a_tilde = dist.rsample()
+        log_prob = dist.log_prob(a_tilde).sum(dim=-1) + self._squash_correction(a_tilde)
+        return -log_prob
 
 
 class Critic(nn.Module):
