@@ -74,6 +74,17 @@ class Config:
     # -309 at epoch 1 to -1.4e8 by epoch 30 in a real training run.
     advantage_eps: float = 1e-3
     advantage_clip: float = 10.0
+    # Floor on log pi(a_tilde_beh | s) inside the actor loss. Off-policy
+    # replay means behavior actions can be up to buffer_size/steps_per_epoch
+    # epochs stale; once the policy has moved, a stale action can sit tens of
+    # sigmas from the current mu, giving log-probs of order -1e4 and gradients
+    # of order (a-mu)/sigma^2 that dwarf everything else in the batch (the
+    # observed logp_cur min of -3e4 by epoch 3 and the alpha crash to 0.007).
+    # Clamping at the floor zeroes the gradient of exactly those samples --
+    # i.e. catastrophically-stale transitions silently drop out of the actor
+    # update instead of dominating it. -20 corresponds to ~5.5 sigma per dim;
+    # any plausibly on-policy sample is far above it.
+    logp_clip_min: float = -20.0
 
     # -------------------------------------------------- diversity reward shaping
     # OFF (0.0) by default to stay faithful to the paper's literal Eq. (9),

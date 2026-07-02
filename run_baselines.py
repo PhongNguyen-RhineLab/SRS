@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 
 from config import Config
 from data import load_and_preprocess, split_data
-from retriever import SASRec, FAISSIndex
+from retriever import FAISSIndex
 from diversity import DiversityModule
 from rl_policy import StateEncoder, Actor
 from evaluate import (
@@ -62,50 +62,55 @@ FIXED_ALPHAS = (1.0, 0.9, 0.8, 0.7, 0.617, 0.5, 0.3)
 
 
 def _assert_checkpoint_matches(cfg):
-    """Fail early and clearly if the checkpoint was trained on a different
-    dataset than cfg expects.
+    """Fail early and clearly if checkpoints are missing or belong to a
+    different dataset than cfg expects.
 
-    torch.load_state_dict's native error ("size mismatch for item_emb.weight:
-    copying a param with shape [3707, 64] ... current model is [12102, 64]")
-    is cryptic. This turns it into a one-line diagnosis naming the likely cause.
-    Example: a [3707, 64] item_emb means num_items=3706 (MovieLens-1M), so if
-    cfg is amazon_beauty (num_items=12101) you are pointing at the wrong
-    DATASET or the wrong CHECKPOINT_DIR.
+    With the ICSRec pipeline (build_index.py), Stage 1 is the released
+    frozen ICSRec checkpoint, so the dataset/checkpoint consistency check
+    reads the ICSRec item table directly. load_icsrec_retriever preflights
+    the same condition, but checking here first gives the diagnosis before
+    any model construction. The trained Stage-3 checkpoints
+    (diversity_module.pt, state_encoder.pt, actor.pt) must exist in
+    cfg.checkpoint_dir; they are produced by pretrain_encoder.py and
+    train_rl.py.
     """
-    path = os.path.join(cfg.checkpoint_dir, "sasrec_retriever.pt")
-    if not os.path.exists(path):
+    if not os.path.exists(cfg.icsrec_ckpt):
         raise FileNotFoundError(
-            f"No checkpoint at {path}. Set CHECKPOINT_DIR to where your "
-            f"{cfg.dataset} checkpoints actually live."
+            f"No ICSRec checkpoint at {cfg.icsrec_ckpt}. Download the "
+            f"released ICSRec-SAS checkpoint for {cfg.dataset} and point "
+            f"cfg.icsrec_ckpt at it."
         )
-    sd = torch.load(path, map_location="cpu")
-    ckpt_items = sd["item_emb.weight"].shape[0]      # num_items + 1
-    ckpt_maxlen = sd["pos_emb.weight"].shape[0]      # max_seq_len + 1
-    want_items = cfg.num_items + 1
-    want_maxlen = cfg.max_seq_len + 1
-    if ckpt_items != want_items or ckpt_maxlen != want_maxlen:
+    sd = torch.load(cfg.icsrec_ckpt, map_location="cpu")
+    ckpt_item_size = sd["item_embeddings.weight"].shape[0]  # num_items + 2
+    want_item_size = cfg.num_items + 2                       # 0=pad, ..., mask
+    if ckpt_item_size != want_item_size:
         raise RuntimeError(
-            "Checkpoint/config mismatch.\n"
-            f"  checkpoint at {path}: num_items={ckpt_items - 1}, "
-            f"max_seq_len={ckpt_maxlen - 1}\n"
-            f"  config DATASET='{cfg.dataset}': num_items={cfg.num_items}, "
-            f"max_seq_len={cfg.max_seq_len}\n"
-            "Fix: set DATASET (and if needed CHECKPOINT_DIR) so the config "
-            "matches the dataset these checkpoints were trained on. "
-            "(num_items=3706 -> movielens_1m, num_items=12101 -> amazon_beauty.)"
+            "ICSRec checkpoint/dataset mismatch.\n"
+            f"  checkpoint at {cfg.icsrec_ckpt}: item_size={ckpt_item_size} "
+            f"(num_items={ckpt_item_size - 2})\n"
+            f"  config DATASET='{cfg.dataset}': num_items={cfg.num_items}\n"
+            "Fix: set DATASET so it matches this checkpoint "
+            "(num_items=3416 -> movielens_1m, num_items=12101 -> amazon_beauty), "
+            "or point cfg.icsrec_ckpt at the right released checkpoint."
         )
+    for fname in ("faiss_index.npy", "diversity_module.pt",
+                  "state_encoder.pt", "actor.pt"):
+        path = os.path.join(cfg.checkpoint_dir, fname)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"No checkpoint at {path}. Run build_index.py, "
+                f"pretrain_encoder.py, and train_rl.py first (or set "
+                f"CHECKPOINT_DIR to where your {cfg.dataset} checkpoints "
+                f"actually live)."
+            )
 
 
 def load_checkpoints(cfg: Config):
     _assert_checkpoint_matches(cfg)
     device = cfg.device
-    retriever = SASRec(
-        cfg.num_items, cfg.ret_emb_dim, cfg.max_seq_len,
-        cfg.ret_num_heads, cfg.ret_num_layers, cfg.ret_dropout,
-    ).to(device)
-    retriever.load_state_dict(torch.load(
-        os.path.join(cfg.checkpoint_dir, "sasrec_retriever.pt"), map_location=device))
-    retriever.eval()
+    from icsrec_retriever import load_icsrec_retriever
+    retriever = load_icsrec_retriever(
+        cfg.icsrec_ckpt, cfg.num_items, hidden_size=cfg.ret_emb_dim, device=device)
 
     faiss_index = FAISSIndex.load(
         os.path.join(cfg.checkpoint_dir, "faiss_index.npy"), cfg.ret_emb_dim)
@@ -176,7 +181,9 @@ def main():
 
     print("Loading trained checkpoints...")
     retriever, faiss_index, diversity_module, state_encoder, actor = load_checkpoints(cfg)
-    item_embs = get_item_embeddings_for_ild(diversity_module, cfg.num_items)
+    # Same space as run_test_eval/train_rl: ILD on the frozen retriever
+    # embeddings (Section 5.1), NOT the diversity module's.
+    item_embs = get_item_embeddings_for_ild(retriever, cfg.num_items)
 
     print("\n[1/5] Relevance top-k (ICSRec greedy)...")
     relevance_pt = evaluate_icsrec_greedy(cfg, test_seqs, retriever, faiss_index, item_embs)

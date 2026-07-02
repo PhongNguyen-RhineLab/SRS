@@ -280,7 +280,12 @@ def main():
 
     print(f"Loading checkpoints for {DATASET}...\n")
     retriever, faiss_index, diversity_module, state_encoder, actor = load_checkpoints(cfg)
-    item_embs = get_item_embeddings_for_ild(diversity_module, cfg.num_items)
+    # Audit the SAME space the reported ILD metric uses: the frozen retriever
+    # embeddings (evaluate.get_item_embeddings_for_ild is called with the
+    # retriever everywhere in train/eval). Passing diversity_module here was a
+    # leftover from before the ILD-space fix and made the audit inspect a
+    # different space than the one the tables report.
+    item_embs = get_item_embeddings_for_ild(retriever, cfg.num_items)
 
     diagnose_alpha(cfg, test_seqs, state_encoder, actor)
     print()

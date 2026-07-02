@@ -92,7 +92,7 @@ def main():
     np.random.seed(cfg.seed)
 
     lr = getattr(cfg, "lr_encoder", 1e-3)               # paper: "LR for Sub + Encoder 1e-3"
-    epochs = getattr(cfg, "encoder_pretrain_epochs", 30)
+    epochs = int(os.environ.get("ENC_EPOCHS", getattr(cfg, "encoder_pretrain_epochs", 30)))
     batch_size = getattr(cfg, "ret_batch_size", 256)
     device = cfg.device
 

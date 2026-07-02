@@ -117,7 +117,12 @@ def train_one_epoch(cfg, env: SlateEnv, actor: Actor, critic: Critic,
                 delta, eps=cfg.advantage_eps, clip=cfg.advantage_clip)
 
         # ---------------- actor loss (Eq. 13) ----------------
-        logp_cur = actor.log_prob_of(states, a_tilde_beh)
+        # Floor the re-evaluated behavior log-prob: transitions so stale that
+        # the current policy assigns them log pi < logp_clip_min contribute a
+        # constant (zero gradient) instead of an unbounded -A*logp pull. See
+        # config.logp_clip_min for the failure mode this prevents.
+        logp_cur = actor.log_prob_of(states, a_tilde_beh).clamp(
+            min=cfg.logp_clip_min)
 
         action_cur, _, _ = actor.sample(states, deterministic=False)
         eta_cur = action_cur[:, 1]
