@@ -23,8 +23,8 @@ from retriever import FAISSIndex
 from icsrec_retriever import load_icsrec_retriever
 
 # Set to "movielens_1m" to build the ml-1m index instead.
-DATASET = "amazon_beauty"
-
+# DATASET = "amazon_beauty"
+DATASET = "movielens_1m"
 
 def main():
     cfg = Config(dataset=DATASET)

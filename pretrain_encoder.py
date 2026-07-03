@@ -49,7 +49,8 @@ from data import load_and_preprocess, split_data
 from rl_policy import StateEncoder
 
 # Set to "movielens_1m" to pretrain the ml-1m encoder instead.
-DATASET = "amazon_beauty"
+# DATASET = "amazon_beauty"
+DATASET = "movielens_1m"
 
 
 class NextItemWindowDataset(Dataset):

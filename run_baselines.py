@@ -43,8 +43,8 @@ import torch
 # checkpoints in CHECKPOINT_DIR were trained on -- the model dimensions
 # (num_items, max_seq_len) come from the dataset and a mismatch makes
 # torch.load_state_dict fail with a size-mismatch error.
-# DATASET = "movielens_1m"
-DATASET = "amazon_beauty"
+DATASET = "movielens_1m"
+# DATASET = "amazon_beauty"
 # Where the checkpoints actually live. Leave as None to use config.py's default
 # (which for movielens_1m auto-redirects "checkpoints" -> "checkpoints_movielens_1m").
 # Set this to an explicit path if your checkpoints are somewhere else -- e.g. if

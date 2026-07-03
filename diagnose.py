@@ -38,13 +38,15 @@ Requires the trained checkpoints (reuses run_baselines.load_checkpoints).
 no checkpoints.
 """
 
+import os
 import sys
 import numpy as np
 
 
 # Match these to the checkpoints you want to inspect (same meaning as in
 # run_baselines.py). Run once per dataset.
-DATASET = "amazon_beauty"
+# DATASET = "amazon_beauty"
+DATASET = "movielens_1m"
 CHECKPOINT_DIR = None
 
 
@@ -116,6 +118,11 @@ def diagnose_alpha(cfg, eval_seqs, state_encoder, actor):
 
     alphas = np.asarray(alphas)
     etas = np.asarray(etas)
+
+    # Persist for plot_paper_figures.py (fig_policy): the histogram in the
+    # paper is regenerated from this file rather than re-running the model.
+    np.save(os.path.join(cfg.checkpoint_dir, "alpha_values.npy"), alphas)
+    np.save(os.path.join(cfg.checkpoint_dir, "eta_values.npy"), etas)
 
     print("=" * 66)
     print(f"Diagnostic 1: policy output distribution ({cfg.dataset}, "

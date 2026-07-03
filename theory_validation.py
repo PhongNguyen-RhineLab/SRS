@@ -23,7 +23,8 @@ from config import Config
 
 # Set to "movielens_1m" to run against MovieLens-1M instead.
 # Set to "movielens_1m" to run against MovieLens-1M instead.
-DATASET = "amazon_beauty"
+# DATASET = "amazon_beauty"
+DATASET = "movielens_1m"
 from data import load_and_preprocess, split_data
 from retriever import FAISSIndex
 from diversity import DiversityModule
@@ -121,6 +122,44 @@ def main():
         cfg, test_seqs, retriever, faiss_index, diversity_module, PAPER_ALPHA_LEARNED)
 
     own_alpha = get_own_learned_alpha(cfg)
+
+    # ---------------- deficit at the REALIZED alpha + grid for fig_theory ----------------
+    # The reference alphas above are historical grid points; the number that
+    # belongs in the paper's Table IV is the deficit at the trade-off this
+    # checkpoint actually realizes. Prefer the deterministic test-time mean
+    # saved by diagnose.py (alpha_values.npy); fall back to the training-log
+    # mean if diagnose has not been run.
+    alpha_path = os.path.join(cfg.checkpoint_dir, "alpha_values.npy")
+    if os.path.exists(alpha_path):
+        realized_alpha = float(np.load(alpha_path).mean())
+        realized_src = "diagnose.py deterministic test-time mean"
+    else:
+        realized_alpha = own_alpha
+        realized_src = "training_log.csv mean (run diagnose.py for the test-time mean)"
+
+    curve = {"grid": [], "realized_alpha": realized_alpha}
+    if realized_alpha is not None:
+        print(f"\nMeasuring deficit at the realized alpha = {realized_alpha:.4f} "
+              f"({realized_src})...")
+        db_real = compute_average_deficit(
+            cfg, test_seqs, retriever, faiss_index, diversity_module, realized_alpha)
+        wc_real = worst_case_deficit(realized_alpha, r_perp, kappa_max, cfg.k)
+        curve["at_realized"] = {"alpha": realized_alpha,
+                                "delta_bar_full": db_real,
+                                "delta_worst": wc_real}
+        print(f"  delta({realized_alpha:.4f}) worst-case = {wc_real:.4f}   "
+              f"delta_bar({realized_alpha:.4f}) measured = {db_real:.6f}")
+
+    print("\nMeasuring delta_bar over an alpha grid (500-user subsample, for fig_theory)...")
+    for a in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0):
+        db = compute_average_deficit(
+            cfg, test_seqs, retriever, faiss_index, diversity_module, a,
+            max_users=500)
+        curve["grid"].append({"alpha": a, "delta_bar": db,
+                              "delta_worst": worst_case_deficit(a, r_perp, kappa_max, cfg.k)})
+    with open(os.path.join(cfg.checkpoint_dir, "deficit_curve.json"), "w") as f:
+        json.dump(curve, f, indent=1)
+    print(f"Deficit curve saved to {cfg.checkpoint_dir}/deficit_curve.json")
 
     # ---------------- print Table IV ----------------
     print("\n" + "=" * 70)
