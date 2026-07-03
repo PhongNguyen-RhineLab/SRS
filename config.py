@@ -2,25 +2,86 @@
 Hyperparameters matching Table 1 of the MARS paper.
 
 Example: to change slate size from 10 to 5 just do cfg.k = 5 before passing cfg around.
+
+Datasets are described declaratively in DATASET_REGISTRY below. To add a new
+dataset, add one entry here (txt file name, ICSRec checkpoint name, history
+window h, max_seq_len) -- nothing else in the codebase needs to change, since
+data.py and all entry scripts read from this registry.
 """
 
 import torch
 from dataclasses import dataclass, field
 
 
+# --------------------------------------------------------------------------- dataset registry
+# One entry per supported dataset. All four come from the official ICSRec
+# repository (https://github.com/QinHsiu/ICSRec): the .txt sequence file and
+# the released SASRec-backbone checkpoint share the same 1-indexed item-id
+# space, which is why the pipeline loads sequences from these files verbatim
+# instead of re-preprocessing raw Amazon/MovieLens dumps (a re-preprocess
+# would produce a different id mapping and silently misalign with the
+# checkpoint's embedding table).
+#
+# h / max_seq_len rationale: Amazon 5-core datasets have short per-user
+# histories, so the paper's h=20 / max_seq_len=50 fits. ml-1m users average
+# ~165 ratings, so we follow SASRec's published ml-1m setting (maxlen=200)
+# and widen the state-encoder window to 50.
+DATASET_REGISTRY = {
+    "amazon_beauty": dict(
+        txt="Beauty.txt",
+        ckpt="ICSRec-SAS-Beauty-0.pt",
+        data_dir="data",                 # legacy location, kept for existing runs
+        checkpoint_dir="checkpoints",    # legacy location, kept for existing runs
+        h=20, max_seq_len=50,
+        pretty="Amazon Beauty 2014 5-core",
+    ),
+    "movielens_1m": dict(
+        txt="ml-1m.txt",
+        ckpt="ICSRec-SAS-ml-1m-0.pt",
+        data_dir="data_movielens_1m",
+        checkpoint_dir="checkpoints_movielens_1m",
+        h=50, max_seq_len=200,
+        pretty="MovieLens-1M",
+    ),
+    "amazon_sports": dict(
+        txt="Sports_and_Outdoors.txt",
+        ckpt="ICSRec-SAS-Sports_and_Outdoors-0.pt",
+        data_dir="data_amazon_sports",
+        checkpoint_dir="checkpoints_amazon_sports",
+        h=20, max_seq_len=50,
+        pretty="Amazon Sports and Outdoors 2014 5-core",
+    ),
+    "amazon_toys": dict(
+        txt="Toys_and_Games.txt",
+        ckpt="ICSRec-SAS-Toys_and_Games-0.pt",
+        data_dir="data_amazon_toys",
+        checkpoint_dir="checkpoints_amazon_toys",
+        h=20, max_seq_len=50,
+        pretty="Amazon Toys and Games 2014 5-core",
+    ),
+}
+
+
+def pretty_name(dataset: str) -> str:
+    """Human-readable dataset name for table headers and figure titles."""
+    return DATASET_REGISTRY[dataset]["pretty"]
+
+
 @dataclass
 class Config:
     # ------------------------------------------------------------------ data
-    # "amazon_beauty" (default, matches the paper) or "movielens_1m".
-    # Pass as a constructor kwarg, e.g. Config(dataset="movielens_1m"), so
-    # __post_init__ below can pick sensible per-dataset directory and
-    # sequence-length defaults. Setting cfg.dataset = ... AFTER construction
-    # will NOT retroactively update data_dir/checkpoint_dir/h/max_seq_len --
-    # set it at construction time, or set those fields yourself too.
+    # Any key of DATASET_REGISTRY (see top of this file). Pass as a
+    # constructor kwarg, e.g. Config(dataset="amazon_toys"), so
+    # __post_init__ below can pick per-dataset directory, checkpoint and
+    # sequence-length defaults from the registry. Setting cfg.dataset = ...
+    # AFTER construction will NOT retroactively update
+    # data_dir/checkpoint_dir/icsrec_ckpt/h/max_seq_len -- set it at
+    # construction time, or set those fields yourself too. Explicit kwargs
+    # (icsrec_ckpt=, data_dir=, ...) always win over registry defaults.
     dataset: str = "amazon_beauty"
-    icsrec_ckpt: str = "icsrec_ckpts/ICSRec-SAS-Beauty-0.pt"
-    data_dir: str = "data"
-    checkpoint_dir: str = "checkpoints"
+    icsrec_ckpt: str = ""      # "" -> registry default
+    data_dir: str = ""         # "" -> registry default
+    checkpoint_dir: str = ""   # "" -> registry default
 
     # will be overwritten after dataset is loaded
     num_items: int = 12101
@@ -116,29 +177,24 @@ class Config:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
     def __post_init__(self):
-        if self.dataset == "movielens_1m":
-            # Separate cache/checkpoint dirs so a MovieLens run never
-            # collides with an existing Amazon Beauty run. Only applied if
-            # the fields are still at their dataclass defaults, so an
-            # explicit data_dir=/checkpoint_dir= kwarg still wins.
-            if self.icsrec_ckpt == "icsrec_ckpts/ICSRec-SAS-Beauty-0.pt":
-                self.icsrec_ckpt = "icsrec_ckpts/ICSRec-SAS-ml-1m-0.pt"
-            if self.data_dir == "data":
-                self.data_dir = "data_movielens_1m"
-            if self.checkpoint_dir == "checkpoints":
-                self.checkpoint_dir = "checkpoints_movielens_1m"
-            # ml-1m users average ~165 ratings each (vs. Amazon Beauty
-            # 5-core's much shorter per-user histories), so the Amazon-tuned
-            # h=20/max_seq_len=50 would truncate most of each user's real
-            # history. Bumping these toward what the original SASRec paper
-            # uses for ml-1m (it reports maxlen=200 for this dataset).
-            # Same "only if still at the Amazon-tuned default" guard.
-            if self.h == 20:
-                self.h = 50
-            if self.max_seq_len == 50:
-                self.max_seq_len = 200
-        elif self.dataset not in ("amazon_beauty", "movielens_1m"):
+        if self.dataset not in DATASET_REGISTRY:
+            known = ", ".join(sorted(DATASET_REGISTRY))
             raise ValueError(
-                f"Unknown dataset '{self.dataset}'. Expected 'amazon_beauty' "
-                f"or 'movielens_1m'."
+                f"Unknown dataset '{self.dataset}'. Expected one of: {known}. "
+                f"(Aliases like 'beauty', 'ml-1m', 'sports', 'toys' are only "
+                f"resolved by cli.py, not here.)"
             )
+        spec = DATASET_REGISTRY[self.dataset]
+        # Registry defaults apply only where the caller left the field empty
+        # (or, for h/max_seq_len, at the dataclass default), so explicit
+        # kwargs always win.
+        if not self.icsrec_ckpt:
+            self.icsrec_ckpt = f"icsrec_ckpts/{spec['ckpt']}"
+        if not self.data_dir:
+            self.data_dir = spec["data_dir"]
+        if not self.checkpoint_dir:
+            self.checkpoint_dir = spec["checkpoint_dir"]
+        if self.h == 20:
+            self.h = spec["h"]
+        if self.max_seq_len == 50:
+            self.max_seq_len = spec["max_seq_len"]

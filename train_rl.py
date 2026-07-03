@@ -10,7 +10,8 @@ L_actor = -sg[Abar_t] * log pi(a_tilde_t|s_t)
           - beta_ent * H[pi(.|s_t)]                       (entropy bonus)
 
 Example:
-    python train_rl.py
+    python train_rl.py --dataset beauty
+    python train_rl.py --dataset toys
 """
 
 import os
@@ -21,12 +22,9 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from config import Config
-
-# Set to "movielens_1m" to run against MovieLens-1M instead.
-# DATASET = "amazon_beauty"
-DATASET = "movielens_1m"
+from cli import build_config
 from data import load_and_preprocess, split_data
-from retriever import SASRec, FAISSIndex
+from retriever import FAISSIndex
 from diversity import DiversityModule
 from rl_policy import StateEncoder, Actor, Critic
 from buffer import ReplayBuffer
@@ -179,7 +177,7 @@ def train_one_epoch(cfg, env: SlateEnv, actor: Actor, critic: Critic,
 
 
 def main():
-    cfg = Config(dataset=DATASET)
+    cfg = build_config("Train the MARS RL policy + diversity module.")
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
 

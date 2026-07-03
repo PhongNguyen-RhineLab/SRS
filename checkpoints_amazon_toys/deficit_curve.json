@@ -1,0 +1,60 @@
+{
+ "grid": [
+  {
+   "alpha": 0.1,
+   "delta_bar": 0.0008906473156809806,
+   "delta_worst": 1.2137822426654257
+  },
+  {
+   "alpha": 0.2,
+   "delta_bar": 0.0001385222588479519,
+   "delta_worst": 1.0433272305414674
+  },
+  {
+   "alpha": 0.3,
+   "delta_bar": 5.383072644472122e-05,
+   "delta_worst": 0.8728722184175092
+  },
+  {
+   "alpha": 0.4,
+   "delta_bar": 8.196633458137513e-06,
+   "delta_worst": 0.7024172062935511
+  },
+  {
+   "alpha": 0.5,
+   "delta_bar": 1.550639271736145e-06,
+   "delta_worst": 0.5319621941695931
+  },
+  {
+   "alpha": 0.6,
+   "delta_bar": 0.0,
+   "delta_worst": 0.36150718204563503
+  },
+  {
+   "alpha": 0.7,
+   "delta_bar": 0.0,
+   "delta_worst": 0.19105216992167692
+  },
+  {
+   "alpha": 0.8,
+   "delta_bar": 0.0,
+   "delta_worst": 0.0205971577977187
+  },
+  {
+   "alpha": 0.9,
+   "delta_bar": 0.0,
+   "delta_worst": 0.0
+  },
+  {
+   "alpha": 1.0,
+   "delta_bar": 0.0,
+   "delta_worst": 0.0
+  }
+ ],
+ "realized_alpha": 0.8924650809747166,
+ "at_realized": {
+  "alpha": 0.8924650809747166,
+  "delta_bar_full": 0.0,
+  "delta_worst": 0.0
+ }
+}

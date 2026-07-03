@@ -3,7 +3,7 @@ Final test-set evaluation reproducing Table 2 (HR@10/NDCG@10/MRR@10/ILD/Coverage
 and Figure 2 (diversity-relevance trade-off scatter plot).
 
 Example:
-    python run_test_eval.py
+    python run_test_eval.py --dataset ml-1m
 """
 
 import os
@@ -13,13 +13,10 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from config import Config
-
-# Set to "movielens_1m" to run against MovieLens-1M instead.
-# DATASET = "amazon_beauty"
-DATASET = "movielens_1m"
+from config import Config, pretty_name
+from cli import build_config
 from data import load_and_preprocess, split_data
-from retriever import SASRec, FAISSIndex
+from retriever import FAISSIndex
 from diversity import DiversityModule
 from rl_policy import StateEncoder, Actor
 from evaluate import evaluate_srs, evaluate_icsrec_greedy, get_item_embeddings_for_ild
@@ -55,7 +52,8 @@ def load_checkpoints(cfg: Config):
     return retriever, faiss_index, diversity_module, state_encoder, actor
 
 
-def make_figure2(srs_metrics: dict, baseline_metrics: dict, save_path: str):
+def make_figure2(srs_metrics: dict, baseline_metrics: dict, save_path: str,
+                 dataset_pretty: str = ""):
     fig, ax = plt.subplots(figsize=(6, 5))
 
     ax.scatter(baseline_metrics["HR@k"], baseline_metrics["ILD"],
@@ -76,7 +74,7 @@ def make_figure2(srs_metrics: dict, baseline_metrics: dict, save_path: str):
 
     ax.set_xlabel("HR@10")
     ax.set_ylabel("ILD (Intra-List Diversity)")
-    ax.set_title("Diversity-relevance trade-off on Amazon Beauty")
+    ax.set_title(f"Diversity-relevance trade-off on {dataset_pretty}")
     ax.legend()
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
@@ -84,7 +82,7 @@ def make_figure2(srs_metrics: dict, baseline_metrics: dict, save_path: str):
 
 
 def main():
-    cfg = Config(dataset=DATASET)
+    cfg = build_config("Final test-set evaluation (Table 2 + Figure 2).")
     data = load_and_preprocess(cfg.data_dir, cfg.dataset)
     cfg.num_items = data["num_items"]
     cfg.num_users = data["num_users"]
@@ -102,7 +100,7 @@ def main():
                               diversity_module, state_encoder, actor, item_embs)
 
     print("\n" + "=" * 60)
-    print("Table 2: Test-set comparison on Amazon Beauty 2014 5-core")
+    print(f"Table 2: Test-set comparison on {pretty_name(cfg.dataset)}")
     print("=" * 60)
     print(f"{'Method':<25}{'HR@10':<10}{'NDCG@10':<10}{'MRR@10':<10}{'ILD':<10}{'Coverage':<10}")
     print(f"{'ICSRec top-10 (greedy)':<25}"
@@ -130,7 +128,8 @@ def main():
     print(f"\nResults saved to {cfg.checkpoint_dir}/test_results.json")
 
     make_figure2(srs_metrics, baseline_metrics,
-                os.path.join(cfg.checkpoint_dir, "figure2_tradeoff.png"))
+                os.path.join(cfg.checkpoint_dir, "figure2_tradeoff.png"),
+                dataset_pretty=pretty_name(cfg.dataset))
 
 
 if __name__ == "__main__":

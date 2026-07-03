@@ -21,13 +21,11 @@ from config import Config
 from data import load_and_preprocess
 from retriever import FAISSIndex
 from icsrec_retriever import load_icsrec_retriever
+from cli import build_config
 
-# Set to "movielens_1m" to build the ml-1m index instead.
-# DATASET = "amazon_beauty"
-DATASET = "movielens_1m"
 
 def main():
-    cfg = Config(dataset=DATASET)
+    cfg = build_config("Build the FAISS index from the frozen ICSRec item table.")
 
     print(f"[{cfg.dataset}] loading sequences to determine num_items...")
     data = load_and_preprocess(cfg.data_dir, cfg.dataset)

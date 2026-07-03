@@ -39,19 +39,7 @@ from baselines import sweep_mmr, sweep_dpp, sweep_fixed_alpha
 import torch
 
 
-# Which dataset's checkpoints to evaluate. This MUST match the dataset the
-# checkpoints in CHECKPOINT_DIR were trained on -- the model dimensions
-# (num_items, max_seq_len) come from the dataset and a mismatch makes
-# torch.load_state_dict fail with a size-mismatch error.
-DATASET = "movielens_1m"
-# DATASET = "amazon_beauty"
-# Where the checkpoints actually live. Leave as None to use config.py's default
-# (which for movielens_1m auto-redirects "checkpoints" -> "checkpoints_movielens_1m").
-# Set this to an explicit path if your checkpoints are somewhere else -- e.g. if
-# you trained ml-1m but saved into the plain "checkpoints" folder, set
-# CHECKPOINT_DIR = "checkpoints" to stop the auto-redirect from looking in the
-# wrong place.
-CHECKPOINT_DIR = None
+from cli import build_config
 
 # Sweep grids. Keep alpha_star and 0.617 in the fixed-alpha grid so the table
 # can directly contrast "pin alpha at the policy's own mean" vs "let the policy
@@ -88,8 +76,8 @@ def _assert_checkpoint_matches(cfg):
             "ICSRec checkpoint/dataset mismatch.\n"
             f"  checkpoint at {cfg.icsrec_ckpt}: item_size={ckpt_item_size} "
             f"(num_items={ckpt_item_size - 2})\n"
-            f"  config DATASET='{cfg.dataset}': num_items={cfg.num_items}\n"
-            "Fix: set DATASET so it matches this checkpoint "
+            f"  config --dataset {cfg.dataset}: num_items={cfg.num_items}\n"
+            "Fix: pass --dataset so it matches this checkpoint "
             "(num_items=3416 -> movielens_1m, num_items=12101 -> amazon_beauty), "
             "or point cfg.icsrec_ckpt at the right released checkpoint."
         )
@@ -140,7 +128,7 @@ def _fmt_row(name, m):
             f"{m['MRR@k']:<9.4f}{m['ILD']:<9.4f}{m['Coverage']:<9.4f}")
 
 
-def make_pareto_figure(mars_pt, relevance_pt, sweeps, save_path):
+def make_pareto_figure(mars_pt, relevance_pt, sweeps, save_path, dataset=""):
     """Pareto scatter: HR@10 (x) vs ILD (y). MARS should dominate the curves,
     i.e. sit up-and-to-the-right relative to the baseline frontiers."""
     fig, ax = plt.subplots(figsize=(6.5, 5))
@@ -163,7 +151,7 @@ def make_pareto_figure(mars_pt, relevance_pt, sweeps, save_path):
 
     ax.set_xlabel("HR@10")
     ax.set_ylabel("ILD (Intra-List Diversity)")
-    ax.set_title(f"Relevance-diversity Pareto frontier ({DATASET})")
+    ax.set_title(f"Relevance-diversity Pareto frontier ({dataset})")
     ax.legend(loc="best", fontsize=9)
     fig.tight_layout()
     fig.savefig(save_path, dpi=150)
@@ -171,7 +159,7 @@ def make_pareto_figure(mars_pt, relevance_pt, sweeps, save_path):
 
 
 def main():
-    cfg = Config(dataset=DATASET)
+    cfg = build_config("Baseline sweep (fixed-alpha / MMR / DPP) vs MARS.")
     if CHECKPOINT_DIR is not None:
         cfg.checkpoint_dir = CHECKPOINT_DIR
     data = load_and_preprocess(cfg.data_dir, cfg.dataset)
@@ -208,7 +196,7 @@ def main():
 
     # ---- console table ------------------------------------------------------
     print("\n" + "=" * 70)
-    print(f"Baseline comparison on {DATASET} (test set)")
+    print(f"Baseline comparison on {cfg.dataset} (test set)")
     print("=" * 70)
     header = f"{'Method':<22}{'HR@10':<9}{'NDCG@10':<9}{'MRR@10':<9}{'ILD':<9}{'Cov.':<9}"
     print(header)
@@ -226,7 +214,7 @@ def main():
     # ---- save ---------------------------------------------------------------
     os.makedirs(cfg.checkpoint_dir, exist_ok=True)
     out = {
-        "dataset": DATASET,
+        "dataset": cfg.dataset,
         "relevance_topk": relevance_pt,
         "mars": mars_pt,
         "sweeps": sweeps,
@@ -238,7 +226,8 @@ def main():
 
     make_pareto_figure(
         mars_pt, relevance_pt, sweeps,
-        os.path.join(cfg.checkpoint_dir, "pareto_frontier.png"))
+        os.path.join(cfg.checkpoint_dir, "pareto_frontier.png"),
+        dataset=cfg.dataset)
 
 
 if __name__ == "__main__":

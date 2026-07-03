@@ -30,8 +30,8 @@ by the baseline comparison:
         looking at the same embedding space.
 
 Usage:
-    # set DATASET / CHECKPOINT_DIR below to match your checkpoints, then:
-    python diagnose.py
+    python diagnose.py --dataset ml-1m
+    python diagnose.py --dataset beauty --checkpoint-dir checkpoints
 
 Requires the trained checkpoints (reuses run_baselines.load_checkpoints).
 `python diagnose.py --selftest` runs a synthetic check of the numpy pieces with
@@ -43,11 +43,6 @@ import sys
 import numpy as np
 
 
-# Match these to the checkpoints you want to inspect (same meaning as in
-# run_baselines.py). Run once per dataset.
-# DATASET = "amazon_beauty"
-DATASET = "movielens_1m"
-CHECKPOINT_DIR = None
 
 
 # ===========================================================================
@@ -271,21 +266,17 @@ def diagnose_embeddings_pools(cfg, eval_seqs, retriever, faiss_index,
 # Driver
 # ===========================================================================
 
-def main():
-    from config import Config
+def main(cfg):
     from data import load_and_preprocess, split_data
     from evaluate import get_item_embeddings_for_ild
     from run_baselines import load_checkpoints
 
-    cfg = Config(dataset=DATASET)
-    if CHECKPOINT_DIR is not None:
-        cfg.checkpoint_dir = CHECKPOINT_DIR
     data = load_and_preprocess(cfg.data_dir, cfg.dataset)
     cfg.num_items = data["num_items"]
     cfg.num_users = data["num_users"]
     _, _, test_seqs = split_data(data["sequences"])
 
-    print(f"Loading checkpoints for {DATASET}...\n")
+    print(f"Loading checkpoints for {cfg.dataset}...\n")
     retriever, faiss_index, diversity_module, state_encoder, actor = load_checkpoints(cfg)
     # Audit the SAME space the reported ILD metric uses: the frozen retriever
     # embeddings (evaluate.get_item_embeddings_for_ild is called with the
@@ -387,7 +378,12 @@ def _selftest():
 
 
 if __name__ == "__main__":
-    if "--selftest" in sys.argv:
+    from cli import make_parser, config_from_args
+    parser = make_parser("Diagnostics: policy alpha distribution + ILD geometry audit.")
+    parser.add_argument("--selftest", action="store_true",
+                        help="Run synthetic numpy checks (no checkpoints needed).")
+    args = parser.parse_args()
+    if args.selftest:
         _selftest()
     else:
-        main()
+        main(config_from_args(args))

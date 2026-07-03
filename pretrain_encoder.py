@@ -45,12 +45,9 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from config import Config
+from cli import build_config
 from data import load_and_preprocess, split_data
 from rl_policy import StateEncoder
-
-# Set to "movielens_1m" to pretrain the ml-1m encoder instead.
-# DATASET = "amazon_beauty"
-DATASET = "movielens_1m"
 
 
 class NextItemWindowDataset(Dataset):
@@ -88,7 +85,7 @@ class EncoderPretrainHead(nn.Module):
 
 
 def main():
-    cfg = Config(dataset=DATASET)
+    cfg = build_config("Pretrain the state encoder with next-item prediction.")
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
 

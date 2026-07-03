@@ -19,12 +19,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from config import Config
-
-# Set to "movielens_1m" to run against MovieLens-1M instead.
-# Set to "movielens_1m" to run against MovieLens-1M instead.
-# DATASET = "amazon_beauty"
-DATASET = "movielens_1m"
+from config import Config, pretty_name
+from cli import build_config
 from data import load_and_preprocess, split_data
 from retriever import FAISSIndex
 from diversity import DiversityModule
@@ -77,7 +73,7 @@ def get_own_learned_alpha(cfg: Config) -> float:
 
 
 def main():
-    cfg = Config(dataset=DATASET)
+    cfg = build_config("Compute Table IV theoretical quantities on the test set.")
     data = load_and_preprocess(cfg.data_dir, cfg.dataset)
     cfg.num_items = data["num_items"]
     cfg.num_users = data["num_users"]
@@ -163,7 +159,7 @@ def main():
 
     # ---------------- print Table IV ----------------
     print("\n" + "=" * 70)
-    print("Table IV: Theoretical quantities on the Amazon Beauty test set")
+    print(f"Table IV: Theoretical quantities on the {pretty_name(cfg.dataset)} test set")
     print("=" * 70)
     rows = [
         ("r_perp (min pool relevance score)", f"{r_perp:.4f}"),
