@@ -38,7 +38,7 @@ from baselines import sweep_mmr, sweep_dpp, sweep_fixed_alpha
 
 import torch
 
-
+CHECKPOINT_DIR = None
 from cli import build_config
 
 # Sweep grids. Keep alpha_star and 0.617 in the fixed-alpha grid so the table
